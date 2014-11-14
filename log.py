@@ -76,7 +76,7 @@ class Metrics(object):
 
 
 def SendMetrics(metrics, graphite_server):
-  logger.info('sending metrics to %r', graphite_server)
+  logger.info('sending metrics to %s:%d', *graphite_server)
   logger.debug('metrics: %r', metrics)
   serialized_metrics = metrics.Serialize()
   logger.debug('serialized as: %r', serialized_metrics)
