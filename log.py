@@ -10,6 +10,8 @@ import urllib2
 import base64
 import time
 import logging
+import subprocess
+import re
 
 parser = argparse.ArgumentParser(
   description="Record and submit network performance data to graphite",
@@ -40,6 +42,8 @@ parser.add_argument('--user', type=str, default=None,
                     help="HTTP Authorization credentials [user:password]")
 parser.add_argument('--path', type=str, default="/",
                     help="HTTP path to request [/path/to/resource]")
+parser.add_argument('--ping', default=False, action='store_true',
+                    help="Run a ping test")
 parser.add_argument('identifier',
                     help="A unique identifier for this host [string]")
 
@@ -139,6 +143,27 @@ def GatherServerHttpMetrics(args, schema, server):
   metrics.Add('size', size, start)
   return metrics.Prefixed(server[0], schema)
 
+def GatherPingMetrics(args, server):
+  metrics = Metrics()
+  start = datetime.datetime.utcnow()
+  logger.info('Pinging %s', server[1])
+  try:
+    output = subprocess.check_output(["ping" , "-c", "1", "-w",
+                                      str(args.timeout), "-q", server[1]])
+  except subprocess.CalledProcessError as e:
+    if e.returncode == 1:
+      logger.warning('Timeout', exc_info=True)
+      metrics.Add('timeout', 1, start)
+    else:
+      metrics.Add('errors', 1, start)
+      logger.error('Failed', exc_info=True)
+  else:
+    match = re.search(
+      r'rtt min/avg/max/mdev = (?P<min>[\d.]*)/(?P<avg>[\d.]*)/(?P<max>[\d.]*)/(?P<mdev>[\d.]*) ms',
+      output)
+    for m, v in match.groupdict().items():
+      metrics.Add(m, v, start)
+  return metrics.Prefixed(server[0], 'ping')
 
 def GatherAllMetrics(args):
   http_metrics = reduce(
@@ -149,6 +174,12 @@ def GatherAllMetrics(args):
     lambda a, b: a+b,
     (GatherServerSocketMetrics(args, server, port)
      for port in args.sock_port for server in args.server))
+  if args.ping:
+    ping_metrics = reduce(
+      lambda a, b: a+b,
+      (GatherPingMetrics(args, server)
+       for server in args.server))
+    return http_metrics+socket_metrics+ping_metrics
   return http_metrics+socket_metrics
 
 
