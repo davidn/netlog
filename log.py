@@ -5,6 +5,7 @@ import pickle
 import datetime
 import struct
 import sys
+import ssl
 import socket
 import urllib2
 import base64
@@ -32,8 +33,10 @@ parser.add_argument('--period',
 parser.add_argument('--server', type=str, nargs=2, action='append',
                     metavar=('NAME', 'HOST'), required=True,
                     help="servers to connect to [IP|hostname]")
-parser.add_argument('--sock_port', type=int, action='append', default=(80,443),
+parser.add_argument('--sock_port', type=int, action='append', default=(80,),
                     help="Ports for test sockets [1-65535]")
+parser.add_argument('--ssl_port', type=int, action='append', default=(443,),
+                    help="Ports for test SSL sockets [1-65535]")
 parser.add_argument('--scheme', type=str, action='append', default=('https',),
                     help="HTTP scheme [http|https]")
 parser.add_argument('--host', type=str, default=None,
@@ -85,7 +88,7 @@ def SendMetrics(metrics, graphite_server):
   sock.close()
 
 
-def GatherServerSocketMetrics(args, server, port):
+def GatherServerSocketMetrics(args, server, port, do_ssl=False):
   metrics = Metrics()
   start = datetime.datetime.utcnow()
   logger.info('Trying TCP connect to %s:%d', server[1], port)
@@ -101,6 +104,15 @@ def GatherServerSocketMetrics(args, server, port):
     return metrics.Prefixed(server[0], port)
   metrics.Add('connect_time',
               (datetime.datetime.utcnow() - start).total_seconds(), start)
+  if do_ssl:
+    logger.info('Trying SSL handshake')
+    try:
+      ssl_sock = ssl.wrap_socket(sock)
+    except ssl.SSLError:
+      pass
+    metrics.Add('ssl_handshake_time',
+                (datetime.datetime.utcnow() - start).total_seconds(), start)
+    metrics.Add('ssl_cert_length', len(ssl_sock.getpeercert(True)), start)
   sock.close()
   return metrics.Prefixed(server[0], port)
 
@@ -174,13 +186,17 @@ def GatherAllMetrics(args):
     lambda a, b: a+b,
     (GatherServerSocketMetrics(args, server, port)
      for port in args.sock_port for server in args.server))
+  ssl_metrics = reduce(
+    lambda a, b: a+b,
+    (GatherServerSocketMetrics(args, server, port, True)
+     for port in args.ssl_port for server in args.server))
   if args.ping:
     ping_metrics = reduce(
       lambda a, b: a+b,
       (GatherPingMetrics(args, server)
        for server in args.server))
-    return http_metrics+socket_metrics+ping_metrics
-  return http_metrics+socket_metrics
+    return http_metrics+socket_metrics+ssl_metrics+ping_metrics
+  return http_metrics+socket_metrics+ssl_metrics
 
 
 def LoopOnce(args):
@@ -196,6 +212,9 @@ def MainLoop(args):
     last_time = datetime.datetime.utcnow()
     if last_time < next_time:
       time.sleep((next_time-last_time).total_seconds())
+    else:
+      logger.error('Data collection took longer than update period: %s > %s',
+                     last_time-next_time+args.period, args.period)
     last_time = next_time
 
 
